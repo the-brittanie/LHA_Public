@@ -78,29 +78,33 @@ def main():
             customer_name = pmt.get("CustomerRef", {}).get("name", "")
             account_id = find_account_id(sf, customer_name, name_map)
 
-            unmatched = not account_id
-            if unmatched:
-                account_id = UNKNOWN_ACCOUNT_ID
-                print(f"  UNMATCHED | No Account found for '{customer_name}' — assigning to UNKNOWN")
-
             payment_type, job_number = get_invoice_info(pmt, access_token, realm_id)
             method = determine_method(pmt, payment_methods)
             ref_num = pmt.get("PaymentRefNum")
             memo = pmt.get("PrivateNote") or pmt.get("CustomerMemo", {}).get("value")
-            notes = " | ".join(filter(None, [
-                f"QBO Customer: {customer_name}" if unmatched else None,
-                f"No. {ref_num}" if ref_num else None,
-                memo,
-            ]))
             qbo_id = pmt["Id"]
             amount = pmt.get("TotalAmt")
             txn_date = pmt.get("TxnDate")
 
             job_id = None
             if payment_type == "Job" and job_number:
-                job_id = find_job_id(sf, job_number)
+                job_id, job_account_id = find_job_id(sf, job_number)
                 if not job_id:
                     print(f"  WARN   | No Job__c found for job number '{job_number}' ({customer_name})")
+                elif not account_id and job_account_id:
+                    account_id = job_account_id
+                    print(f"  INFO   | Using account from Job__c for '{customer_name}'")
+
+            unmatched = not account_id
+            if unmatched:
+                account_id = UNKNOWN_ACCOUNT_ID
+                print(f"  UNMATCHED | No Account found for '{customer_name}' — assigning to UNKNOWN")
+
+            notes = " | ".join(filter(None, [
+                f"QBO Customer: {customer_name}" if unmatched else None,
+                f"No. {ref_num}" if ref_num else None,
+                memo,
+            ]))
 
             record = {
                 "Account__c": account_id,
