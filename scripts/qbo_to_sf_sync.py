@@ -193,6 +193,8 @@ def main():
 
     for pmt in payments:
         try:
+            import json
+            print(f"  RAW    | {json.dumps(pmt, indent=2)}")
             customer_name = pmt.get("CustomerRef", {}).get("name", "")
             account_id = find_account_id(sf, customer_name)
 
@@ -240,7 +242,8 @@ def main():
                 print(f"  LINKED | {customer_name} | ${amount} | {payment_type} | matched existing record")
                 linked += 1
             else:
-                sf.Customer_Payment__c.upsert(f"QBO_Payment_Id__c/{qbo_id}", record)
+                upsert_record = {k: v for k, v in record.items() if k != "QBO_Payment_Id__c"}
+                sf.Customer_Payment__c.upsert(f"QBO_Payment_Id__c/{qbo_id}", upsert_record)
                 print(f"  OK     | {customer_name} | ${amount} | {payment_type} | {method or '—'}")
                 upserted += 1
 
