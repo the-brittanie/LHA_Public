@@ -3,7 +3,11 @@ name: QBO → Salesforce Payment Sync
 on:
   schedule:
     - cron: '0 0 * * *'   # Daily at 7 PM ET (midnight UTC)
-  workflow_dispatch:        # Allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      backfill_start_date:
+        description: 'Backfill start date (YYYY-MM-DD). Leave blank for normal daily sync.'
+        required: false
 
 jobs:
   sync:
@@ -31,7 +35,12 @@ jobs:
           SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
           SF_SECURITY_TOKEN: ${{ secrets.SF_SECURITY_TOKEN }}
           # SF_DOMAIN: test   # Uncomment if using a sandbox
-        run: python scripts/qbo_to_sf_sync.py
+        run: |
+          if [ -n "${{ github.event.inputs.backfill_start_date }}" ]; then
+            python scripts/qbo_backfill.py ${{ github.event.inputs.backfill_start_date }}
+          else
+            python scripts/qbo_to_sf_sync.py
+          fi
 
       # QBO issues a new refresh token each time — rotate the secret so it never expires
       - name: Rotate QBO refresh token
