@@ -16,6 +16,7 @@ import requests
 from datetime import date, timedelta
 from simple_salesforce import Salesforce
 
+sys.path.insert(0, os.path.dirname(__file__))
 from qbo_to_sf_sync import (
     refresh_qbo_token,
     get_payment_methods,

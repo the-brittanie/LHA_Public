@@ -143,7 +143,7 @@ def determine_method(payment, payment_methods):
         return "Cash"
     if "check" in raw or "cheque" in raw:
         return "Check"
-    if "ach" in raw or "bank transfer" in raw or "e-check" in raw or "echeck" in raw:
+    if "ach" in raw or "bank" in raw or "bank transfer" in raw or "e-check" in raw or "echeck" in raw:
         return "ACH"
     if "finance" in raw or "financing" in raw:
         return "Finance"
