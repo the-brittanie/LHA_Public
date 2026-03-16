@@ -60,6 +60,17 @@ def get_payments_since(access_token, realm_id, since_date):
     return data.get("QueryResponse", {}).get("Payment", [])
 
 
+def get_payment_methods(access_token, realm_id):
+    """Fetch all QBO payment methods and return a dict of {id: name}."""
+    try:
+        data = qbo_get(access_token, realm_id, "query",
+                       {"query": "SELECT * FROM PaymentMethod MAXRESULTS 100"})
+        methods = data.get("QueryResponse", {}).get("PaymentMethod", [])
+        return {m["Id"]: m["Name"] for m in methods}
+    except Exception:
+        return {}
+
+
 def get_invoice(access_token, realm_id, invoice_id):
     try:
         data = qbo_get(access_token, realm_id, f"invoice/{invoice_id}")
@@ -92,7 +103,6 @@ def get_invoice_info(payment, access_token, realm_id):
             if not invoice:
                 continue
 
-            # Collect all invoice text
             all_text = (
                 invoice.get("CustomerMemo", {}).get("value", "") + " " +
                 invoice.get("PrivateNote", "")
@@ -111,23 +121,26 @@ def get_invoice_info(payment, access_token, realm_id):
     return "Other", None
 
 
-def determine_method(payment):
-    raw = payment.get("PaymentMethodRef", {}).get("name", "")
-    print(f"  DEBUG  | PaymentMethodRef.name = '{raw}'")
-    lower = raw.lower()
-    if "cash" in lower:
+def determine_method(payment, payment_methods):
+    """Look up payment method name by ID and map to Method__c picklist value."""
+    method_id = payment.get("PaymentMethodRef", {}).get("value")
+    if not method_id:
+        return None
+    raw = payment_methods.get(method_id, "").lower()
+    if "cash" in raw:
         return "Cash"
-    if "check" in lower or "cheque" in lower:
+    if "check" in raw or "cheque" in raw:
         return "Check"
-    if "ach" in lower or "bank transfer" in lower or "e-check" in lower or "echeck" in lower:
+    if "ach" in raw or "bank transfer" in raw or "e-check" in raw or "echeck" in raw:
         return "ACH"
-    if "finance" in lower or "financing" in lower:
+    if "finance" in raw or "financing" in raw:
         return "Finance"
-    if "credit" in lower or "visa" in lower or "mastercard" in lower or "amex" in lower or "discover" in lower:
+    if "credit" in raw or "visa" in raw or "mastercard" in raw or "amex" in raw or "discover" in raw:
         return "Credit Card"
-    if "other" in lower:
+    if "other" in raw:
         return "Other"
-    print(f"  DEBUG  | No method match for '{raw}' — leaving Method__c blank")
+    if raw:
+        print(f"  WARN   | Unrecognized payment method '{payment_methods.get(method_id)}' — leaving Method__c blank")
     return None
 
 
@@ -188,13 +201,12 @@ def main():
     payments = get_payments_since(access_token, realm_id, since_date)
     print(f"Found {len(payments)} payment(s) since {since_date}")
 
+    payment_methods = get_payment_methods(access_token, realm_id)
     sf = get_sf_connection()
     upserted = linked = skipped = errors = 0
 
     for pmt in payments:
         try:
-            import json
-            print(f"  RAW    | {json.dumps(pmt, indent=2)}")
             customer_name = pmt.get("CustomerRef", {}).get("name", "")
             account_id = find_account_id(sf, customer_name)
 
@@ -204,7 +216,7 @@ def main():
                 continue
 
             payment_type, job_number = get_invoice_info(pmt, access_token, realm_id)
-            method = determine_method(pmt)
+            method = determine_method(pmt, payment_methods)
             ref_num = pmt.get("PaymentRefNum")
             memo = pmt.get("PrivateNote") or pmt.get("CustomerMemo", {}).get("value")
             notes = " | ".join(filter(None, [f"No. {ref_num}" if ref_num else None, memo]))
@@ -212,7 +224,6 @@ def main():
             amount = pmt.get("TotalAmt")
             txn_date = pmt.get("TxnDate")
 
-            # Look up Job__c for Job type payments
             job_id = None
             if payment_type == "Job" and job_number:
                 job_id = find_job_id(sf, job_number)
@@ -228,13 +239,10 @@ def main():
                 "Job__c": job_id,
                 "QBO_Payment_Id__c": qbo_id,
             }
-            # Only include Method__c if QBO has a value — never overwrite an existing value
             if method:
                 record["Method__c"] = method
-            # Remove other None values
             record = {k: v for k, v in record.items() if v is not None}
 
-            # Match existing Housecall Pro record by Account + Amount + Date
             existing_id = find_existing_payment(sf, account_id, amount, txn_date)
 
             if existing_id:
