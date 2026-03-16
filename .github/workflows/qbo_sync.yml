@@ -54,6 +54,18 @@ jobs:
           name: qbo-vendors
           path: qbo_vendors.csv
 
+      - name: Send bills to QBO
+        if: ${{ github.event.inputs.export_vendors != 'true' && github.event.inputs.backfill_start_date == '' }}
+        env:
+          QBO_CLIENT_ID: ${{ secrets.QBO_CLIENT_ID }}
+          QBO_CLIENT_SECRET: ${{ secrets.QBO_CLIENT_SECRET }}
+          QBO_REFRESH_TOKEN: ${{ secrets.QBO_REFRESH_TOKEN }}
+          QBO_REALM_ID: ${{ secrets.QBO_REALM_ID }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
+          SF_SECURITY_TOKEN: ${{ secrets.SF_SECURITY_TOKEN }}
+        run: python scripts/sf_to_qbo_bills.py
+
       # QBO issues a new refresh token each time — rotate the secret so it never expires
       - name: Rotate QBO refresh token
         if: always()
