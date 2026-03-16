@@ -123,6 +123,8 @@ def determine_method(payment):
         return "Finance"
     if "credit" in raw or "visa" in raw or "mastercard" in raw or "amex" in raw or "discover" in raw:
         return "Credit Card"
+    if "other" in raw:
+        return "Other"
     return None
 
 
@@ -198,7 +200,9 @@ def main():
 
             payment_type, job_number = get_invoice_info(pmt, access_token, realm_id)
             method = determine_method(pmt)
-            notes = pmt.get("PrivateNote") or pmt.get("CustomerMemo", {}).get("value")
+            ref_num = pmt.get("PaymentRefNum")
+            memo = pmt.get("PrivateNote") or pmt.get("CustomerMemo", {}).get("value")
+            notes = " | ".join(filter(None, [f"No. {ref_num}" if ref_num else None, memo]))
             qbo_id = pmt["Id"]
             amount = pmt.get("TotalAmt")
             txn_date = pmt.get("TxnDate")
