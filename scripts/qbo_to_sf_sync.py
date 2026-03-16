@@ -222,11 +222,14 @@ def main():
                 "Amount__c": amount,
                 "Payment_Date__c": txn_date,
                 "Type__c": payment_type,
-                "Method__c": method,
                 "Notes__c": notes,
                 "Job__c": job_id,
                 "QBO_Payment_Id__c": qbo_id,
             }
+            # Only include Method__c if QBO has a value — never overwrite an existing value
+            if method:
+                record["Method__c"] = method
+            # Remove other None values
             record = {k: v for k, v in record.items() if v is not None}
 
             # Match existing Housecall Pro record by Account + Amount + Date
