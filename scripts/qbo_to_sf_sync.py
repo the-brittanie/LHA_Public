@@ -21,6 +21,8 @@ import requests
 from datetime import date, timedelta
 from simple_salesforce import Salesforce
 
+UNKNOWN_ACCOUNT_ID = "001Vq00000p5AFwIAM"
+
 
 # ── QBO Auth ──────────────────────────────────────────────────────────────────
 
@@ -167,11 +169,45 @@ def get_sf_connection():
     )
 
 
-def find_account_id(sf, customer_name):
-    safe_name = customer_name.replace("'", "\\'")
-    result = sf.query(f"SELECT Id FROM Account WHERE Name = '{safe_name}' LIMIT 1")
-    records = result.get("records", [])
-    return records[0]["Id"] if records else None
+def load_name_map():
+    """Load QBO → Salesforce account name overrides from account_name_map.json."""
+    map_path = os.path.join(os.path.dirname(__file__), "account_name_map.json")
+    try:
+        with open(map_path) as f:
+            import json
+            data = json.load(f)
+            return {k: v for k, v in data.items() if not k.startswith("_") and not k.startswith("examples")}
+    except Exception:
+        return {}
+
+
+def flip_name(name):
+    """Convert 'Last, First' to 'First Last' if comma is present."""
+    if "," in name:
+        parts = [p.strip() for p in name.split(",", 1)]
+        return f"{parts[1]} {parts[0]}"
+    return None
+
+
+def find_account_id(sf, customer_name, name_map):
+    """Try exact match, then manual map, then Last/First flip."""
+    for candidate in _name_candidates(customer_name, name_map):
+        safe = candidate.replace("'", "\\'")
+        result = sf.query(f"SELECT Id FROM Account WHERE Name = '{safe}' LIMIT 1")
+        records = result.get("records", [])
+        if records:
+            return records[0]["Id"]
+    return None
+
+
+def _name_candidates(customer_name, name_map):
+    """Return name variants to try in order."""
+    yield customer_name
+    if customer_name in name_map:
+        yield name_map[customer_name]
+    flipped = flip_name(customer_name)
+    if flipped:
+        yield flipped
 
 
 def find_job_id(sf, job_number):
@@ -214,24 +250,29 @@ def main():
     print(f"Found {len(payments)} payment(s) since {since_date}")
 
     payment_methods = get_payment_methods(access_token, realm_id)
+    name_map = load_name_map()
     sf = get_sf_connection()
     upserted = linked = skipped = errors = 0
 
     for pmt in payments:
         try:
             customer_name = pmt.get("CustomerRef", {}).get("name", "")
-            account_id = find_account_id(sf, customer_name)
+            account_id = find_account_id(sf, customer_name, name_map)
 
-            if not account_id:
-                print(f"  SKIP   | No Account found for '{customer_name}'")
-                skipped += 1
-                continue
+            unmatched = not account_id
+            if unmatched:
+                account_id = UNKNOWN_ACCOUNT_ID
+                print(f"  UNMATCHED | No Account found for '{customer_name}' — assigning to UNKNOWN")
 
             payment_type, job_number = get_invoice_info(pmt, access_token, realm_id)
             method = determine_method(pmt, payment_methods)
             ref_num = pmt.get("PaymentRefNum")
             memo = pmt.get("PrivateNote") or pmt.get("CustomerMemo", {}).get("value")
-            notes = " | ".join(filter(None, [f"No. {ref_num}" if ref_num else None, memo]))
+            notes = " | ".join(filter(None, [
+                f"QBO Customer: {customer_name}" if unmatched else None,
+                f"No. {ref_num}" if ref_num else None,
+                memo,
+            ]))
             qbo_id = pmt["Id"]
             amount = pmt.get("TotalAmt")
             txn_date = pmt.get("TxnDate")

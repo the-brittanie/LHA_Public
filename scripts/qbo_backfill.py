@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from simple_salesforce import Salesforce
 
 sys.path.insert(0, os.path.dirname(__file__))
+from qbo_to_sf_sync import UNKNOWN_ACCOUNT_ID
 from qbo_to_sf_sync import (
     refresh_qbo_token,
     get_payment_methods,
@@ -25,6 +26,7 @@ from qbo_to_sf_sync import (
     find_account_id,
     find_job_id,
     find_existing_payment,
+    load_name_map,
     qbo_get,
 )
 
@@ -61,6 +63,7 @@ def main():
     print(f"Found {len(payments)} payment(s)")
 
     payment_methods = get_payment_methods(access_token, realm_id)
+    name_map = load_name_map()
     sf = Salesforce(
         username=os.environ["SF_USERNAME"],
         password=os.environ["SF_PASSWORD"],
@@ -73,18 +76,22 @@ def main():
     for pmt in payments:
         try:
             customer_name = pmt.get("CustomerRef", {}).get("name", "")
-            account_id = find_account_id(sf, customer_name)
+            account_id = find_account_id(sf, customer_name, name_map)
 
-            if not account_id:
-                print(f"  SKIP   | No Account found for '{customer_name}'")
-                skipped += 1
-                continue
+            unmatched = not account_id
+            if unmatched:
+                account_id = UNKNOWN_ACCOUNT_ID
+                print(f"  UNMATCHED | No Account found for '{customer_name}' — assigning to UNKNOWN")
 
             payment_type, job_number = get_invoice_info(pmt, access_token, realm_id)
             method = determine_method(pmt, payment_methods)
             ref_num = pmt.get("PaymentRefNum")
             memo = pmt.get("PrivateNote") or pmt.get("CustomerMemo", {}).get("value")
-            notes = " | ".join(filter(None, [f"No. {ref_num}" if ref_num else None, memo]))
+            notes = " | ".join(filter(None, [
+                f"QBO Customer: {customer_name}" if unmatched else None,
+                f"No. {ref_num}" if ref_num else None,
+                memo,
+            ]))
             qbo_id = pmt["Id"]
             amount = pmt.get("TotalAmt")
             txn_date = pmt.get("TxnDate")
