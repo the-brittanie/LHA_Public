@@ -1,0 +1,45 @@
+name: QBO → Salesforce Payment Sync
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # Daily at 7 PM ET (midnight UTC)
+  workflow_dispatch:        # Allow manual trigger from GitHub Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.4.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Run sync
+        env:
+          QBO_CLIENT_ID: ${{ secrets.QBO_CLIENT_ID }}
+          QBO_CLIENT_SECRET: ${{ secrets.QBO_CLIENT_SECRET }}
+          QBO_REFRESH_TOKEN: ${{ secrets.QBO_REFRESH_TOKEN }}
+          QBO_REALM_ID: ${{ secrets.QBO_REALM_ID }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
+          SF_SECURITY_TOKEN: ${{ secrets.SF_SECURITY_TOKEN }}
+          # SF_DOMAIN: test   # Uncomment if using a sandbox
+        run: python scripts/qbo_to_sf_sync.py
+
+      # QBO issues a new refresh token each time — rotate the secret so it never expires
+      - name: Rotate QBO refresh token
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -f new_refresh_token.txt ]; then
+            gh secret set QBO_REFRESH_TOKEN < new_refresh_token.txt --repo ${{ github.repository }}
+            echo "Refresh token rotated successfully."
+          fi
