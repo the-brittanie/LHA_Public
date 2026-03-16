@@ -2,11 +2,12 @@
 Salesforce → QuickBooks Online bill sync.
 
 Picks up Supplier_Invoice__c records where QBO_Status__c = 'Ready',
-creates QBO Bills, then marks each record 'Complete' or 'Error'.
+creates QBO Bills with the attached PDF, then marks each record 'Complete' or 'Error'.
 
 Runs as part of the nightly GitHub Actions workflow.
 """
 
+import json
 import os
 import sys
 import requests
@@ -72,6 +73,28 @@ def create_qbo_bill(access_token, realm_id, invoice, expense_account_id):
     return resp.json().get("Bill", {}).get("Id")
 
 
+def attach_pdf_to_qbo_bill(access_token, realm_id, bill_id, file_content, filename):
+    """Upload a PDF and attach it to an existing QBO Bill."""
+    metadata = json.dumps({
+        "AttachableRef": [{"EntityRef": {"type": "Bill", "value": str(bill_id)}}],
+        "ContentType": "application/pdf",
+        "FileName": filename,
+    })
+
+    resp = requests.post(
+        f"https://quickbooks.api.intuit.com/v3/company/{realm_id}/upload",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        },
+        files={
+            "file_metadata_0": (None, metadata, "application/json"),
+            "file_content_0": (filename, file_content, "application/pdf"),
+        },
+    )
+    resp.raise_for_status()
+
+
 # ── Salesforce ────────────────────────────────────────────────────────────────
 
 def get_pending_invoices(sf):
@@ -82,6 +105,36 @@ def get_pending_invoices(sf):
         "WHERE QBO_Status__c = 'Ready'"
     )
     return result.get("records", [])
+
+
+def get_pdf_attachment(sf, invoice_id):
+    """Download the latest PDF attached to a Supplier_Invoice__c record."""
+    links = sf.query(
+        f"SELECT ContentDocumentId FROM ContentDocumentLink "
+        f"WHERE LinkedEntityId = '{invoice_id}' LIMIT 1"
+    )
+    records = links.get("records", [])
+    if not records:
+        raise ValueError("No file attachment found on this invoice")
+
+    doc_id = records[0]["ContentDocumentId"]
+
+    versions = sf.query(
+        f"SELECT Id, Title, FileExtension FROM ContentVersion "
+        f"WHERE ContentDocumentId = '{doc_id}' AND IsLatest = true LIMIT 1"
+    )
+    version_records = versions.get("records", [])
+    if not version_records:
+        raise ValueError("No file version found for attachment")
+
+    version = version_records[0]
+    filename = f"{version['Title']}.{version.get('FileExtension', 'pdf')}"
+
+    url = f"{sf.base_url}sobjects/ContentVersion/{version['Id']}/VersionData"
+    resp = requests.get(url, headers={"Authorization": f"Bearer {sf.session_id}"})
+    resp.raise_for_status()
+
+    return resp.content, filename
 
 
 def update_status(sf, record_id, status):
@@ -116,10 +169,17 @@ def main():
     for inv in invoices:
         inv_number = inv.get("Invoice_Number__c") or inv["Id"]
         try:
+            # Create the bill
             bill_id = create_qbo_bill(access_token, realm_id, inv, expense_account_id)
+
+            # Attach the PDF
+            file_content, filename = get_pdf_attachment(sf, inv["Id"])
+            attach_pdf_to_qbo_bill(access_token, realm_id, bill_id, file_content, filename)
+
             update_status(sf, inv["Id"], "Complete")
-            print(f"  OK    | {inv_number} | ${inv.get('Amount__c')} → QBO Bill {bill_id}")
+            print(f"  OK    | {inv_number} | ${inv.get('Amount__c')} → QBO Bill {bill_id} + PDF attached")
             sent += 1
+
         except Exception as e:
             update_status(sf, inv["Id"], "Error")
             print(f"  ERROR | {inv_number} — {e}")
