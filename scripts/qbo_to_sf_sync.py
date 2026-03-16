@@ -90,11 +90,18 @@ def extract_job_number(text):
 
 def get_invoice_info(payment, access_token, realm_id):
     """
-    Returns (type, job_number) by inspecting linked invoice text.
-    - 'RSA' anywhere in invoice text → ('Membership', None)
-    - Job number found → ('Job', job_number)
+    Returns (type, job_number) by inspecting the payment and linked invoice.
+    - 'RSA' in PaymentRefNum or invoice text → ('Membership', None)
+    - Job number found in invoice text or PaymentRefNum → ('Job', job_number)
     - Otherwise → ('Other', None)
     """
+    ref_num = payment.get("PaymentRefNum", "")
+
+    # Check PaymentRefNum on the payment first
+    if "rsa" in ref_num.lower():
+        return "Membership", None
+
+    # Check linked invoice text
     for line in payment.get("Line", []):
         for linked in line.get("LinkedTxn", []):
             if linked.get("TxnType") != "Invoice":
@@ -117,6 +124,11 @@ def get_invoice_info(payment, access_token, realm_id):
             job_number = extract_job_number(all_text)
             if job_number:
                 return "Job", job_number
+
+    # Fall back to PaymentRefNum as job number
+    job_number = extract_job_number(ref_num)
+    if job_number:
+        return "Job", job_number
 
     return "Other", None
 
