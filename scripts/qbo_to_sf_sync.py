@@ -112,19 +112,22 @@ def get_invoice_info(payment, access_token, realm_id):
 
 
 def determine_method(payment):
-    raw = payment.get("PaymentMethodRef", {}).get("name", "").lower()
-    if "cash" in raw:
+    raw = payment.get("PaymentMethodRef", {}).get("name", "")
+    print(f"  DEBUG  | PaymentMethodRef.name = '{raw}'")
+    lower = raw.lower()
+    if "cash" in lower:
         return "Cash"
-    if "check" in raw or "cheque" in raw:
+    if "check" in lower or "cheque" in lower:
         return "Check"
-    if "ach" in raw or "bank transfer" in raw or "e-check" in raw or "echeck" in raw:
+    if "ach" in lower or "bank transfer" in lower or "e-check" in lower or "echeck" in lower:
         return "ACH"
-    if "finance" in raw or "financing" in raw:
+    if "finance" in lower or "financing" in lower:
         return "Finance"
-    if "credit" in raw or "visa" in raw or "mastercard" in raw or "amex" in raw or "discover" in raw:
+    if "credit" in lower or "visa" in lower or "mastercard" in lower or "amex" in lower or "discover" in lower:
         return "Credit Card"
-    if "other" in raw:
+    if "other" in lower:
         return "Other"
+    print(f"  DEBUG  | No method match for '{raw}' — leaving Method__c blank")
     return None
 
 
