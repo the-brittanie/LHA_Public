@@ -30,8 +30,11 @@ def get_bank_account_id(access_token, realm_id):
     return accounts[0]["Id"]
 
 
-def create_qbo_bill_payment(access_token, realm_id, batch, invoices, bank_account_id, vendor_qbo_id):
+def create_qbo_bill_payment(access_token, realm_id, batch, invoices, bank_account_id):
     """POST a Bill Payment to QBO. Returns the new QBO Bill Payment ID."""
+    vendor_qbo_id = (batch.get("Supplier_ID__r") or {}).get("QBO_Id__c")
+    if not vendor_qbo_id:
+        raise ValueError("Supplier has no QBO_Id__c — cannot create bill payment")
 
     lines = []
     bills_total = 0
@@ -92,26 +95,11 @@ def create_qbo_bill_payment(access_token, realm_id, batch, invoices, bank_accoun
 
 def get_pending_batches(sf):
     result = sf.query(
-        "SELECT Id, Name, Date__c, Supplier__c "
+        "SELECT Id, Name, Date__c, Supplier_ID__r.QBO_Id__c "
         "FROM Payment_Batch__c "
         "WHERE QBO_Status__c = 'Ready'"
     )
     return result.get("records", [])
-
-
-def get_vendor_qbo_id(sf, supplier_name):
-    """Look up QBO_Id__c on Supplier__c by Name."""
-    safe = supplier_name.replace("'", "\\'")
-    result = sf.query(
-        f"SELECT QBO_Id__c FROM Supplier__c WHERE Name = '{safe}' LIMIT 1"
-    )
-    records = result.get("records", [])
-    if not records:
-        raise ValueError(f"No Supplier__c found with Name = '{supplier_name}'")
-    qbo_id = records[0].get("QBO_Id__c")
-    if not qbo_id:
-        raise ValueError(f"Supplier '{supplier_name}' has no QBO_Id__c")
-    return qbo_id
 
 
 def get_batch_invoices(sf, batch_id):
@@ -168,9 +156,8 @@ def main():
             if not invoices:
                 raise ValueError("No invoices with QBO_Bill_Id__c found on this batch")
 
-            vendor_qbo_id = get_vendor_qbo_id(sf, batch.get("Supplier__c", ""))
             payment_id = create_qbo_bill_payment(
-                access_token, realm_id, batch, invoices, bank_account_id, vendor_qbo_id
+                access_token, realm_id, batch, invoices, bank_account_id
             )
             update_batch(sf, batch["Id"], "Complete", qbo_id=payment_id)
             bills = [i for i in invoices if (i.get("Amount__c") or 0) >= 0]
