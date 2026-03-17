@@ -140,7 +140,7 @@ def attach_pdf_to_qbo_bill(access_token, realm_id, qbo_id, file_content, filenam
 def get_pending_invoices(sf):
     result = sf.query(
         "SELECT Id, Amount__c, Date__c, Due_Date__c, Invoice_Number__c, "
-        "Classification__c, Vendor__r.QBO_Id__c "
+        "Classification__c, Vendor__r.QBO_Id__c, QBO_Bill_Id__c, QBO_Credit_Id__c "
         "FROM Supplier_Invoice__c "
         "WHERE QBO_Status__c = 'Ready'"
     )
@@ -218,6 +218,15 @@ def main():
         inv_number = inv.get("Invoice_Number__c") or inv["Id"]
         amount = inv.get("Amount__c") or 0
         is_credit = amount < 0
+
+        # Skip if already synced
+        if is_credit and inv.get("QBO_Credit_Id__c"):
+            print(f"  SKIP  | {inv_number} | already has QBO_Credit_Id__c {inv['QBO_Credit_Id__c']}")
+            continue
+        if not is_credit and inv.get("QBO_Bill_Id__c"):
+            print(f"  SKIP  | {inv_number} | already has QBO_Bill_Id__c {inv['QBO_Bill_Id__c']}")
+            continue
+
         try:
             if is_credit:
                 qbo_id = create_qbo_vendor_credit(access_token, realm_id, inv, expense_account_id)
