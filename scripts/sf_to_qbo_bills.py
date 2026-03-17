@@ -176,7 +176,10 @@ def main():
             file_content, filename = get_pdf_attachment(sf, inv["Id"])
             attach_pdf_to_qbo_bill(access_token, realm_id, bill_id, file_content, filename)
 
-            update_status(sf, inv["Id"], "Complete")
+            sf.Supplier_Invoice__c.update(inv["Id"], {
+                "QBO_Status__c": "Complete",
+                "QBO_Bill_Id__c": str(bill_id),
+            })
             print(f"  OK    | {inv_number} | ${inv.get('Amount__c')} → QBO Bill {bill_id} + PDF attached")
             sent += 1
 
