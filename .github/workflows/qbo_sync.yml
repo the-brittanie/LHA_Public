@@ -2,7 +2,7 @@ name: QBO → Salesforce Payment Sync
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # Daily at 7 PM ET (midnight UTC)
+    - cron: '0 9,21 * * *'   # 5 AM and 5 PM ET (9 AM and 9 PM UTC)
   workflow_dispatch:
     inputs:
       backfill_start_date:
