@@ -93,17 +93,20 @@ def extract_job_number(text):
 def get_invoice_info(payment, access_token, realm_id):
     """
     Returns (type, job_number) by inspecting the payment and linked invoice.
-    - 'RSA' in PaymentRefNum or invoice text → ('Membership', None)
+    - 'RSA' in PaymentRefNum, PrivateNote, or CustomerMemo → ('Membership', None)
     - Job number found in invoice text or PaymentRefNum → ('Job', job_number)
     - Otherwise → ('Other', None)
     """
     ref_num = payment.get("PaymentRefNum", "")
+    private_note = payment.get("PrivateNote", "")
+    customer_memo = payment.get("CustomerMemo", {}).get("value", "")
+    notes_text = f"{ref_num} {private_note} {customer_memo}"
 
-    # Check PaymentRefNum on the payment first
-    if "rsa" in ref_num.lower():
+    # Membership ONLY if RSA appears in the payment's own notes
+    if "rsa" in notes_text.lower():
         return "Membership", None
 
-    # Check linked invoice text
+    # Check linked invoice for job number
     for line in payment.get("Line", []):
         for linked in line.get("LinkedTxn", []):
             if linked.get("TxnType") != "Invoice":
@@ -119,9 +122,6 @@ def get_invoice_info(payment, access_token, realm_id):
             for inv_line in invoice.get("Line", []):
                 all_text += " " + inv_line.get("SalesItemLineDetail", {}).get("ItemRef", {}).get("name", "")
                 all_text += " " + inv_line.get("Description", "")
-
-            if "rsa" in all_text.lower() or "membership" in all_text.lower():
-                return "Membership", None
 
             job_number = extract_job_number(all_text)
             if job_number:
@@ -220,6 +220,32 @@ def find_job_id(sf, job_number):
     return None, None
 
 
+def find_by_qbo_id(sf, qbo_id):
+    """Return existing Customer_Payment__c record by QBO Payment ID, or None."""
+    result = sf.query(
+        f"SELECT Id, Account__c, Amount__c, Payment_Date__c, Type__c, "
+        f"Method__c, Notes__c, Job__c "
+        f"FROM Customer_Payment__c "
+        f"WHERE QBO_Payment_Id__c = '{qbo_id}' LIMIT 1"
+    )
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def needs_update(existing, new_record):
+    """Return True if any field in new_record differs from what is in Salesforce."""
+    for field, new_val in new_record.items():
+        if field == "QBO_Payment_Id__c":
+            continue
+        existing_val = existing.get(field)
+        if isinstance(new_val, float) or isinstance(existing_val, float):
+            if abs(float(new_val or 0) - float(existing_val or 0)) > 0.001:
+                return True
+        elif str(new_val or "") != str(existing_val or ""):
+            return True
+    return False
+
+
 def find_existing_payment(sf, account_id, amount, payment_date):
     """Find a Housecall Pro payment with no QBO ID that matches on Account + Amount + Date."""
     result = sf.query(
@@ -255,35 +281,37 @@ def main():
     payment_methods = get_payment_methods(access_token, realm_id)
     name_map = load_name_map()
     sf = get_sf_connection()
-    upserted = linked = skipped = errors = 0
+    upserted = linked = updated = skipped = errors = 0
 
     for pmt in payments:
         try:
+            qbo_id = pmt["Id"]
             customer_name = pmt.get("CustomerRef", {}).get("name", "")
-            account_id = find_account_id(sf, customer_name, name_map)
+            amount = pmt.get("TotalAmt")
+            txn_date = pmt.get("TxnDate")
 
+            # ── Check if already synced by QBO Payment ID ──
+            already_synced = find_by_qbo_id(sf, qbo_id)
+
+            # ── Build the record (needed for both new and update paths) ──
+            account_id = find_account_id(sf, customer_name, name_map)
             payment_type, job_number = get_invoice_info(pmt, access_token, realm_id)
             method = determine_method(pmt, payment_methods)
             ref_num = pmt.get("PaymentRefNum")
             memo = pmt.get("PrivateNote") or pmt.get("CustomerMemo", {}).get("value")
-            qbo_id = pmt["Id"]
-            amount = pmt.get("TotalAmt")
-            txn_date = pmt.get("TxnDate")
 
-            # Look up Job__c and pull its Account if no direct account match
             job_id = None
             if payment_type == "Job" and job_number:
                 job_id, job_account_id = find_job_id(sf, job_number)
                 if not job_id:
-                    print(f"  WARN   | No Job__c found for job number '{job_number}' ({customer_name})")
+                    print(f"  WARN      | No Job__c found for job number '{job_number}' ({customer_name})")
                 elif not account_id and job_account_id:
                     account_id = job_account_id
-                    print(f"  INFO   | Using account from Job__c for '{customer_name}'")
+                    print(f"  INFO      | Using account from Job__c for '{customer_name}'")
 
             unmatched = not account_id
             if unmatched:
                 account_id = UNKNOWN_ACCOUNT_ID
-                print(f"  UNMATCHED | No Account found for '{customer_name}' — assigning to UNKNOWN")
 
             notes = " | ".join(filter(None, [
                 f"QBO Customer: {customer_name}" if unmatched else None,
@@ -304,23 +332,38 @@ def main():
                 record["Method__c"] = method
             record = {k: v for k, v in record.items() if v is not None}
 
-            existing_id = find_existing_payment(sf, account_id, amount, txn_date)
+            # ── Already synced: check if update needed ──
+            if already_synced:
+                if needs_update(already_synced, record):
+                    update_record = {k: v for k, v in record.items() if k != "QBO_Payment_Id__c"}
+                    sf.Customer_Payment__c.update(already_synced["Id"], update_record)
+                    print(f"  UPDATED   | {customer_name} | ${amount} | {payment_type}")
+                    updated += 1
+                else:
+                    print(f"  SKIP      | {customer_name} | ${amount} | already up to date")
+                    skipped += 1
+                continue
 
+            # ── New payment: match Housecall Pro record or create ──
+            existing_id = find_existing_payment(sf, account_id, amount, txn_date)
             if existing_id:
                 sf.Customer_Payment__c.update(existing_id, record)
-                print(f"  LINKED | {customer_name} | ${amount} | {payment_type} | matched existing record")
+                print(f"  LINKED    | {customer_name} | ${amount} | {payment_type} | matched existing record")
                 linked += 1
             else:
+                if unmatched:
+                    print(f"  UNMATCHED | {customer_name} | ${amount} | assigning to UNKNOWN")
                 upsert_record = {k: v for k, v in record.items() if k != "QBO_Payment_Id__c"}
                 sf.Customer_Payment__c.upsert(f"QBO_Payment_Id__c/{qbo_id}", upsert_record)
-                print(f"  OK     | {customer_name} | ${amount} | {payment_type} | {method or '—'}")
+                if not unmatched:
+                    print(f"  OK        | {customer_name} | ${amount} | {payment_type} | {method or '—'}")
                 upserted += 1
 
         except Exception as e:
-            print(f"  ERROR  | QBO Payment {pmt.get('Id')} — {e}")
+            print(f"  ERROR     | QBO Payment {pmt.get('Id')} — {e}")
             errors += 1
 
-    print(f"\nDone. Created: {upserted} | Linked to existing: {linked} | Skipped: {skipped} | Errors: {errors}")
+    print(f"\nDone. Created: {upserted} | Linked: {linked} | Updated: {updated} | Skipped: {skipped} | Errors: {errors}")
     if errors:
         sys.exit(1)
 
