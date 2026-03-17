@@ -73,10 +73,50 @@ def create_qbo_bill(access_token, realm_id, invoice, expense_account_id):
     return resp.json().get("Bill", {}).get("Id")
 
 
-def attach_pdf_to_qbo_bill(access_token, realm_id, bill_id, file_content, filename):
-    """Upload a PDF and attach it to an existing QBO Bill."""
+def create_qbo_vendor_credit(access_token, realm_id, invoice, expense_account_id):
+    """POST a new Vendor Credit to QBO. Returns the new QBO Vendor Credit ID."""
+    vendor_qbo_id = (invoice.get("Vendor__r") or {}).get("QBO_Id__c")
+    if not vendor_qbo_id:
+        raise ValueError("Vendor has no QBO_Id__c — cannot create vendor credit")
+
+    classification = invoice.get("Classification__c") or ""
+    description = f"Parts & Materials - {classification}".strip(" -")
+
+    payload = {
+        "VendorRef": {"value": vendor_qbo_id},
+        "TxnDate": invoice.get("Date__c"),
+        "Line": [
+            {
+                "Amount": abs(invoice.get("Amount__c") or 0),
+                "DetailType": "AccountBasedExpenseLineDetail",
+                "Description": description,
+                "AccountBasedExpenseLineDetail": {
+                    "AccountRef": {"value": expense_account_id}
+                },
+            }
+        ],
+    }
+
+    if invoice.get("Invoice_Number__c"):
+        payload["DocNumber"] = invoice["Invoice_Number__c"]
+
+    resp = requests.post(
+        f"https://quickbooks.api.intuit.com/v3/company/{realm_id}/vendorcredit",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        json=payload,
+    )
+    resp.raise_for_status()
+    return resp.json().get("VendorCredit", {}).get("Id")
+
+
+def attach_pdf_to_qbo_bill(access_token, realm_id, qbo_id, file_content, filename, entity_type="Bill"):
+    """Upload a PDF and attach it to an existing QBO Bill or VendorCredit."""
     metadata = json.dumps({
-        "AttachableRef": [{"EntityRef": {"type": "Bill", "value": str(bill_id)}}],
+        "AttachableRef": [{"EntityRef": {"type": entity_type, "value": str(qbo_id)}}],
         "ContentType": "application/pdf",
         "FileName": filename,
     })
@@ -176,19 +216,27 @@ def main():
 
     for inv in invoices:
         inv_number = inv.get("Invoice_Number__c") or inv["Id"]
+        amount = inv.get("Amount__c") or 0
+        is_credit = amount < 0
         try:
-            # Create the bill
-            bill_id = create_qbo_bill(access_token, realm_id, inv, expense_account_id)
-
-            # Attach the PDF
-            file_content, filename = get_pdf_attachment(sf, inv["Id"])
-            attach_pdf_to_qbo_bill(access_token, realm_id, bill_id, file_content, filename)
-
-            sf.Supplier_Invoice__c.update(inv["Id"], {
-                "QBO_Status__c": "Complete",
-                "QBO_Bill_Id__c": str(bill_id),
-            })
-            print(f"  OK    | {inv_number} | ${inv.get('Amount__c')} → QBO Bill {bill_id} + PDF attached")
+            if is_credit:
+                qbo_id = create_qbo_vendor_credit(access_token, realm_id, inv, expense_account_id)
+                file_content, filename = get_pdf_attachment(sf, inv["Id"])
+                attach_pdf_to_qbo_bill(access_token, realm_id, qbo_id, file_content, filename, entity_type="VendorCredit")
+                sf.Supplier_Invoice__c.update(inv["Id"], {
+                    "QBO_Status__c": "Complete",
+                    "QBO_Credit_Id__c": str(qbo_id),
+                })
+                print(f"  OK    | {inv_number} | ${amount} → QBO Vendor Credit {qbo_id} + PDF attached")
+            else:
+                qbo_id = create_qbo_bill(access_token, realm_id, inv, expense_account_id)
+                file_content, filename = get_pdf_attachment(sf, inv["Id"])
+                attach_pdf_to_qbo_bill(access_token, realm_id, qbo_id, file_content, filename, entity_type="Bill")
+                sf.Supplier_Invoice__c.update(inv["Id"], {
+                    "QBO_Status__c": "Complete",
+                    "QBO_Bill_Id__c": str(qbo_id),
+                })
+                print(f"  OK    | {inv_number} | ${amount} → QBO Bill {qbo_id} + PDF attached")
             sent += 1
 
         except Exception as e:
