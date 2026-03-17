@@ -14,6 +14,9 @@ on:
       export_bills:
         description: 'Set to "true" to export open QBO bills to CSV instead of syncing.'
         required: false
+      export_bank_accounts:
+        description: 'Set to "true" to export QBO bank accounts to CSV instead of syncing.'
+        required: false
 
 jobs:
   sync:
@@ -46,6 +49,8 @@ jobs:
             python scripts/export_qbo_vendors.py
           elif [ "${{ github.event.inputs.export_bills }}" = "true" ]; then
             python scripts/export_qbo_bills.py
+          elif [ "${{ github.event.inputs.export_bank_accounts }}" = "true" ]; then
+            python scripts/export_qbo_bank_accounts.py
           elif [ -n "${{ github.event.inputs.backfill_start_date }}" ]; then
             python scripts/qbo_backfill.py ${{ github.event.inputs.backfill_start_date }}
           else
@@ -65,6 +70,13 @@ jobs:
         with:
           name: qbo-open-bills
           path: qbo_open_bills.csv
+
+      - name: Upload bank accounts export
+        if: ${{ github.event.inputs.export_bank_accounts == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qbo-bank-accounts
+          path: qbo_bank_accounts.csv
 
       - name: Send bills to QBO
         if: ${{ github.event.inputs.export_vendors != 'true' && github.event.inputs.backfill_start_date == '' }}
