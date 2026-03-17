@@ -144,10 +144,18 @@ def update_status(sf, record_id, status):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    # Use the rotated refresh token from the payment sync if available,
+    # otherwise fall back to the environment variable
+    if os.path.exists("new_refresh_token.txt"):
+        with open("new_refresh_token.txt") as f:
+            refresh_token = f.read().strip()
+    else:
+        refresh_token = os.environ["QBO_REFRESH_TOKEN"]
+
     access_token, new_refresh_token = refresh_qbo_token(
         os.environ["QBO_CLIENT_ID"],
         os.environ["QBO_CLIENT_SECRET"],
-        os.environ["QBO_REFRESH_TOKEN"],
+        refresh_token,
     )
 
     with open("new_refresh_token.txt", "w") as f:
