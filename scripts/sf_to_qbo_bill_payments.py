@@ -14,7 +14,7 @@ import requests
 sys.path.insert(0, os.path.dirname(__file__))
 from qbo_to_sf_sync import refresh_qbo_token, qbo_get, get_sf_connection
 
-BANK_ACCOUNT_NAME = "190 - Truist Checking 3306"
+BANK_ACCOUNT_NAME = "Truist Checking 3306"
 
 
 # ── QBO ───────────────────────────────────────────────────────────────────────
