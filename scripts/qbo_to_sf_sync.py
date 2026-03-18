@@ -189,8 +189,13 @@ def flip_name(name):
     return None
 
 
-def find_account_id(sf, customer_name, name_map):
-    """Try exact match, then manual map, then Last/First flip."""
+def find_account_id(sf, customer_name, name_map, qbo_customer_id=None):
+    """Try QBO ID first, then exact name match, manual map, Last/First flip."""
+    if qbo_customer_id:
+        result = sf.query(f"SELECT Id FROM Account WHERE QBO_Id__c = '{qbo_customer_id}' LIMIT 1")
+        records = result.get("records", [])
+        if records:
+            return records[0]["Id"]
     for candidate in _name_candidates(customer_name, name_map):
         safe = candidate.replace("'", "\\'")
         result = sf.query(f"SELECT Id FROM Account WHERE Name = '{safe}' LIMIT 1")
@@ -286,7 +291,9 @@ def main():
     for pmt in payments:
         try:
             qbo_id = pmt["Id"]
-            customer_name = pmt.get("CustomerRef", {}).get("name", "")
+            customer_ref = pmt.get("CustomerRef", {})
+            customer_name = customer_ref.get("name", "")
+            qbo_customer_id = customer_ref.get("value")
             amount = pmt.get("TotalAmt")
             txn_date = pmt.get("TxnDate")
 
@@ -294,7 +301,7 @@ def main():
             already_synced = find_by_qbo_id(sf, qbo_id)
 
             # ── Build the record (needed for both new and update paths) ──
-            account_id = find_account_id(sf, customer_name, name_map)
+            account_id = find_account_id(sf, customer_name, name_map, qbo_customer_id)
             payment_type, job_number = get_invoice_info(pmt, access_token, realm_id)
             method = determine_method(pmt, payment_methods)
             ref_num = pmt.get("PaymentRefNum")
