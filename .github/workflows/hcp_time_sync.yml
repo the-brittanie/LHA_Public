@@ -1,0 +1,31 @@
+name: HCP → Salesforce Time Entry Sync
+
+on:
+  schedule:
+    - cron: '0 10 * * *'   # 10:00 UTC = 6:00 AM ET daily
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.4.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Sync time entries
+        env:
+          HCP_API_KEY: ${{ secrets.HCP_API_KEY }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
+          SF_SECURITY_TOKEN: ${{ secrets.SF_SECURITY_TOKEN }}
+          # SF_DOMAIN: test   # Uncomment if using a sandbox
+        run: python scripts/hcp_time_entries_to_sf.py
