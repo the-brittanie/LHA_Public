@@ -1,0 +1,119 @@
+name: QBO → Salesforce Payment Sync
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'   # Every 4 hours
+  workflow_dispatch:
+    inputs:
+      backfill_start_date:
+        description: 'Backfill start date (YYYY-MM-DD). Leave blank for normal daily sync.'
+        required: false
+      export_vendors:
+        description: 'Set to "true" to export QBO vendors to CSV instead of syncing.'
+        required: false
+      export_bills:
+        description: 'Set to "true" to export open QBO bills to CSV instead of syncing.'
+        required: false
+      export_bank_accounts:
+        description: 'Set to "true" to export QBO bank accounts to CSV instead of syncing.'
+        required: false
+      match_customers:
+        description: 'Set to "true" to match QBO customers to SF Accounts and write QBO_Id__c.'
+        required: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.4.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Run sync
+        env:
+          QBO_CLIENT_ID: ${{ secrets.QBO_CLIENT_ID }}
+          QBO_CLIENT_SECRET: ${{ secrets.QBO_CLIENT_SECRET }}
+          QBO_REFRESH_TOKEN: ${{ secrets.QBO_REFRESH_TOKEN }}
+          QBO_REALM_ID: ${{ secrets.QBO_REALM_ID }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
+          SF_SECURITY_TOKEN: ${{ secrets.SF_SECURITY_TOKEN }}
+          # SF_DOMAIN: test   # Uncomment if using a sandbox
+        run: |
+          if [ "${{ github.event.inputs.export_vendors }}" = "true" ]; then
+            python scripts/export_qbo_vendors.py
+          elif [ "${{ github.event.inputs.export_bills }}" = "true" ]; then
+            python scripts/export_qbo_bills.py
+          elif [ "${{ github.event.inputs.export_bank_accounts }}" = "true" ]; then
+            python scripts/export_qbo_bank_accounts.py
+          elif [ "${{ github.event.inputs.match_customers }}" = "true" ]; then
+            python scripts/match_qbo_customers.py
+          elif [ -n "${{ github.event.inputs.backfill_start_date }}" ]; then
+            python scripts/qbo_backfill.py ${{ github.event.inputs.backfill_start_date }}
+          else
+            python scripts/qbo_to_sf_sync.py
+          fi
+
+      - name: Upload vendor export
+        if: ${{ github.event.inputs.export_vendors == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qbo-vendors
+          path: qbo_vendors.csv
+
+      - name: Upload bills export
+        if: ${{ github.event.inputs.export_bills == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qbo-open-bills
+          path: qbo_open_bills.csv
+
+      - name: Upload bank accounts export
+        if: ${{ github.event.inputs.export_bank_accounts == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qbo-bank-accounts
+          path: qbo_bank_accounts.csv
+
+      - name: Send bill payments to QBO
+        if: ${{ github.event.inputs.export_vendors != 'true' && github.event.inputs.export_bills != 'true' && github.event.inputs.export_bank_accounts != 'true' && github.event.inputs.backfill_start_date == '' }}
+        env:
+          QBO_CLIENT_ID: ${{ secrets.QBO_CLIENT_ID }}
+          QBO_CLIENT_SECRET: ${{ secrets.QBO_CLIENT_SECRET }}
+          QBO_REFRESH_TOKEN: ${{ secrets.QBO_REFRESH_TOKEN }}
+          QBO_REALM_ID: ${{ secrets.QBO_REALM_ID }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
+          SF_SECURITY_TOKEN: ${{ secrets.SF_SECURITY_TOKEN }}
+        run: python scripts/sf_to_qbo_bill_payments.py
+
+      - name: Send bills to QBO
+        if: ${{ github.event.inputs.export_vendors != 'true' && github.event.inputs.backfill_start_date == '' }}
+        env:
+          QBO_CLIENT_ID: ${{ secrets.QBO_CLIENT_ID }}
+          QBO_CLIENT_SECRET: ${{ secrets.QBO_CLIENT_SECRET }}
+          QBO_REFRESH_TOKEN: ${{ secrets.QBO_REFRESH_TOKEN }}
+          QBO_REALM_ID: ${{ secrets.QBO_REALM_ID }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
+          SF_SECURITY_TOKEN: ${{ secrets.SF_SECURITY_TOKEN }}
+        run: python scripts/sf_to_qbo_bills.py
+
+      # QBO issues a new refresh token each time — rotate the secret so it never expires
+      - name: Rotate QBO refresh token
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -f new_refresh_token.txt ]; then
+            gh secret set QBO_REFRESH_TOKEN < new_refresh_token.txt --repo ${{ github.repository }}
+            echo "Refresh token rotated successfully."
+          fi
